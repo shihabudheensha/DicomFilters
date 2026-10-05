@@ -1,0 +1,6 @@
+@TigerView9.ImageProcessing.Api_HostAddress = http://localhost:5283
+
+GET {{TigerView9.ImageProcessing.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

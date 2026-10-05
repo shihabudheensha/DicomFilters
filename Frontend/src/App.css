@@ -1,0 +1,16 @@
+.cornerstone-viewport {
+  position: relative;
+  width: 800px;
+  height: 600px;
+  background: black;
+  overflow: hidden;
+}
+
+.cornerstone-canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
