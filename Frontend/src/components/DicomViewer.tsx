@@ -3,8 +3,6 @@ import {
   RenderingEngine,
   Enums,
   eventTarget,
-  imageLoader,
-  metaData,
   utilities,
   type Types,
 } from "@cornerstonejs/core";
@@ -23,13 +21,16 @@ const originalImageId = `wadouri:${dicomUrl}`;
 export default function DicomViewer() {
   const elementRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<Types.IStackViewport | null>(null);
+  // Untouched copy of the DICOM pixels; every filter run starts from this
   const originalPixelDataRef = useRef<Uint16Array | null>(null);
   const imageWidthRef = useRef<number>(0);
   const imageHeightRef = useRef<number>(0);
-  const voiRangeRef = useRef<Types.VOIRange | undefined>(undefined);
+  // Lets a newer filter run win over a slower older one
+  const filterRequestRef = useRef(0);
 
   const [ready, setReady] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [sigma, setSigma] = useState(8);
 
   useEffect(() => {
     let renderingEngine: RenderingEngine | undefined;
@@ -101,13 +102,12 @@ export default function DicomViewer() {
         }
 
         // --------------------------------
-        // Keep ORIGINAL pixels for processing / comparison
+        // Keep ORIGINAL pixels for processing / reset
         // --------------------------------
 
         originalPixelDataRef.current = new Uint16Array(imageData.scalarData);
         imageWidthRef.current = width;
         imageHeightRef.current = height;
-        voiRangeRef.current = viewport.getProperties().voiRange;
         viewportRef.current = viewport;
 
         setReady(true);
@@ -130,141 +130,141 @@ export default function DicomViewer() {
     };
   }, []);
 
-  async function showImage(imageId: string) {
+  // Write pixels into the loaded image and redraw, without reloading the stack
+  function displayPixels(pixels: Uint16Array) {
     const viewport = viewportRef.current;
 
     if (!viewport) {
       return;
     }
 
-    await viewport.setStack([imageId], 0);
+    const image = viewport.getCornerstoneImage();
 
-    // Keep the original window/level so the comparison is fair
-    if (voiRangeRef.current) {
-      viewport.setProperties({ voiRange: voiRangeRef.current });
-    }
-
-    viewport.render();
-  }
-
-  async function handleApplySmoothing() {
-    const viewport = viewportRef.current;
-    const originalPixelData = originalPixelDataRef.current;
-
-    if (!viewport || !originalPixelData) {
+    if (!image?.voxelManager) {
+      console.error("No Cornerstone image loaded");
       return;
     }
+
+    const vtkImageData = viewport
+      .getDefaultActor()
+      ?.actor.getMapper()
+      ?.getInputData();
+
+    if (!vtkImageData) {
+      console.error("No VTK image data found");
+      return;
+    }
+
+    // 1. Update the Cornerstone image (what tools read, and what the viewport
+    //    re-syncs VTK from on the next image change)
+    image.voxelManager.getScalarData().set(pixels);
+
+    // 2. Copy it into the VTK image data that is actually rendered
+    utilities.updateVTKImageDataWithCornerstoneImage(vtkImageData, image);
+
+    viewport.render();
+
+    logDifference(vtkImageData.getPointData().getScalars().getData());
+  }
+
+  function logDifference(renderedPixels: ArrayLike<number>) {
+    const originalPixelData = originalPixelDataRef.current;
+
+    if (!originalPixelData) {
+      return;
+    }
+
+    let changedPixels = 0;
+    let maxDifference = 0;
+
+    for (let i = 0; i < originalPixelData.length; i++) {
+      const difference = Math.abs(renderedPixels[i] - originalPixelData[i]);
+
+      if (difference > 0) {
+        changedPixels++;
+      }
+
+      if (difference > maxDifference) {
+        maxDifference = difference;
+      }
+    }
+
+    console.log("Changed pixels:", changedPixels, "/", originalPixelData.length);
+    console.log("Max difference:", maxDifference);
+  }
+
+  async function applyFilter(filterSigma: number) {
+    const originalPixelData = originalPixelDataRef.current;
+
+    if (!originalPixelData) {
+      return;
+    }
+
+    const requestId = ++filterRequestRef.current;
 
     setProcessing(true);
 
     try {
-      const width = imageWidthRef.current;
-      const height = imageHeightRef.current;
-
-      // --------------------------------
-      // Apply OpenCV smoothing
-      // --------------------------------
-
+      // Always filter from the original, never from the previous result
       const smoothedPixelData = await applySmoothing(
         originalPixelData,
-        width,
-        height,
+        imageWidthRef.current,
+        imageHeightRef.current,
+        filterSigma,
       );
 
-      // --------------------------------
-      // Show processed pixels in the viewport
-      // --------------------------------
-
-      // createAndCacheLocalImage registers imagePlane/imagePixel metadata
-      // for the new imageId and puts the image in the cache, which the
-      // StackViewport needs in order to display it.
-      const imagePlane = metaData.get("imagePlaneModule", originalImageId);
-      const processedImageId = `processed:smoothing-${Date.now()}`;
-
-      imageLoader.createAndCacheLocalImage(processedImageId, {
-        scalarData: smoothedPixelData,
-        dimensions: [width, height],
-        spacing: [
-          imagePlane?.columnPixelSpacing ?? 1,
-          imagePlane?.rowPixelSpacing ?? 1,
-        ],
-        origin: imagePlane?.imagePositionPatient,
-        direction: imagePlane?.imageOrientationPatient,
-        frameOfReferenceUID: imagePlane?.frameOfReferenceUID,
-        targetBuffer: { type: "Uint16Array" },
-      });
-
-      // StackViewport.buildMetadata destructures generalSeriesModule (modality);
-      // createAndCacheLocalImage doesn't register it, so copy it from the original.
-      utilities.genericMetadataProvider.add(processedImageId, {
-        type: "generalSeriesModule",
-        metadata: metaData.get("generalSeriesModule", originalImageId) ?? {
-          modality: "OT",
-        },
-      });
-
-      await showImage(processedImageId);
-
-      // --------------------------------
-      // Verify what is actually rendered (VTK scalars) vs original
-      // --------------------------------
-
-      const renderedPixels = viewport
-        .getDefaultActor()
-        ?.actor.getMapper()
-        ?.getInputData()
-        ?.getPointData()
-        .getScalars()
-        .getData();
-
-      if (!renderedPixels) {
-        console.error("No rendered VTK scalar data found");
+      if (requestId !== filterRequestRef.current) {
         return;
       }
 
-      let changedPixels = 0;
-      let maxDifference = 0;
-
-      for (let i = 0; i < originalPixelData.length; i++) {
-        const difference = Math.abs(renderedPixels[i] - originalPixelData[i]);
-
-        if (difference > 0) {
-          changedPixels++;
-        }
-
-        if (difference > maxDifference) {
-          maxDifference = difference;
-        }
-      }
-
-      console.log("Displayed image:", viewport.getCurrentImageId());
-      console.log("Changed pixels:", changedPixels, "/", originalPixelData.length);
-      console.log("Max difference:", maxDifference);
+      displayPixels(smoothedPixelData);
     } catch (error) {
       console.error("Smoothing failed:", error);
     } finally {
-      setProcessing(false);
+      if (requestId === filterRequestRef.current) {
+        setProcessing(false);
+      }
     }
   }
 
-  async function handleReset() {
-    try {
-      await showImage(originalImageId);
-    } catch (error) {
-      console.error("Reset failed:", error);
+  function handleReset() {
+    const originalPixelData = originalPixelDataRef.current;
+
+    if (!originalPixelData) {
+      return;
     }
+
+    // Invalidate any filter run still in flight
+    filterRequestRef.current++;
+    setProcessing(false);
+
+    displayPixels(originalPixelData);
   }
 
   return (
     <div>
       <div className="viewer-toolbar">
-        <button
-          disabled={!ready || processing}
-          onClick={handleApplySmoothing}
-        >
+        <label>
+          Sigma: {sigma.toFixed(1)}
+          <input
+            type="range"
+            min={0.1}
+            max={30}
+            step={0.1}
+            value={sigma}
+            disabled={!ready}
+            onChange={(event) => setSigma(Number(event.target.value))}
+            // Filter when the user lets go, not on every drag tick
+            onPointerUp={(event) =>
+              applyFilter(Number(event.currentTarget.value))
+            }
+            onKeyUp={(event) => applyFilter(Number(event.currentTarget.value))}
+          />
+        </label>
+        <button disabled={!ready || processing} onClick={() => applyFilter(sigma)}>
           {processing ? "Smoothing…" : "Apply smoothing"}
         </button>
-        <button disabled={!ready || processing} onClick={handleReset}>
+        <button disabled={!ready} onClick={handleReset}>
           Reset
         </button>
       </div>
