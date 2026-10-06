@@ -1,3 +1,9 @@
+.viewer-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
 .cornerstone-viewport {
   position: relative;
   width: 800px;

@@ -1,10 +1,16 @@
-import { useEffect, useRef } from "react";
-import { RenderingEngine, Enums, type Types } from "@cornerstonejs/core";
-
+import { useEffect, useRef, useState } from "react";
+import {
+  RenderingEngine,
+  Enums,
+  eventTarget,
+  imageLoader,
+  metaData,
+  utilities,
+  type Types,
+} from "@cornerstonejs/core";
 import { initCornerstone } from "../cornerstone/initCornerstone";
 import { initOpenCV } from "../imageProcessing/opencv";
 import { applySmoothing } from "../imageProcessing/smoothing";
-import { getMinMax } from "../imageProcessing/pixelUtils";
 
 const { ViewportType } = Enums;
 
@@ -12,15 +18,33 @@ const renderingEngineId = "tigerview9RenderingEngine";
 const viewportId = "tigerview9Viewport";
 
 const dicomUrl = "https://localhost:7099/api/dicom/instance-0005.dcm";
+const originalImageId = `wadouri:${dicomUrl}`;
 
 export default function DicomViewer() {
   const elementRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<Types.IStackViewport | null>(null);
   const originalPixelDataRef = useRef<Uint16Array | null>(null);
   const imageWidthRef = useRef<number>(0);
   const imageHeightRef = useRef<number>(0);
+  const voiRangeRef = useRef<Types.VOIRange | undefined>(undefined);
+
+  const [ready, setReady] = useState(false);
+  const [processing, setProcessing] = useState(false);
 
   useEffect(() => {
     let renderingEngine: RenderingEngine | undefined;
+    // React StrictMode mounts twice in dev; stop the stale run after cleanup
+    let cancelled = false;
+
+    // StackViewport swallows load failures and only fires this event
+    const onImageLoadError = (event: Event) => {
+      console.error("Image load error:", (event as CustomEvent).detail);
+    };
+
+    eventTarget.addEventListener(
+      Enums.Events.IMAGE_LOAD_ERROR,
+      onImageLoadError,
+    );
 
     async function loadDicom() {
       if (!elementRef.current) {
@@ -28,14 +52,13 @@ export default function DicomViewer() {
       }
 
       try {
-        //console.log("Initializing Cornerstone...");
-
         await initCornerstone();
-
-        //console.log("Cornerstone initialized");
-
-        const cv = await initOpenCV();
+        await initOpenCV();
         console.log("OpenCV ready");
+
+        if (cancelled) {
+          return;
+        }
 
         renderingEngine = new RenderingEngine(renderingEngineId);
 
@@ -47,27 +70,19 @@ export default function DicomViewer() {
 
         renderingEngine.enableElement(viewportInput);
 
-        //console.log("Viewport enabled");
-
         const viewport = renderingEngine.getViewport(
           viewportId,
         ) as Types.IStackViewport;
 
-        const imageId = `wadouri:${dicomUrl}`;
+        await viewport.setStack([originalImageId], 0);
 
-        //console.log("Loading image:", imageId);
+        if (cancelled) {
+          return;
+        }
 
-        await viewport.setStack([imageId], 0);
-
-        //console.log("Stack loaded");
-
-        const originalImage = viewport.getCornerstoneImage();
-
-        console.log("Original Cornerstone image:", originalImage);
+        viewport.render();
 
         const imageData = viewport.getImageData();
-
-        //console.log("Image data:", imageData);
 
         if (!imageData) {
           throw new Error("No image data");
@@ -79,71 +94,23 @@ export default function DicomViewer() {
         console.log("Width:", width);
         console.log("Height:", height);
 
-        console.log("Scalar data type:", imageData.scalarData.constructor.name);
-
-        console.log("Scalar data length:", imageData.scalarData.length);
-
         if (!(imageData.scalarData instanceof Uint16Array)) {
           throw new Error(
             `Expected Uint16Array but got ${imageData.scalarData.constructor.name}`,
           );
         }
 
-        const pixelData = imageData.scalarData;
-
         // --------------------------------
-        // Keep ORIGINAL pixels
+        // Keep ORIGINAL pixels for processing / comparison
         // --------------------------------
 
-        const originalPixelData = new Uint16Array(pixelData);
-
-        originalPixelDataRef.current = originalPixelData;
-
+        originalPixelDataRef.current = new Uint16Array(imageData.scalarData);
         imageWidthRef.current = width;
         imageHeightRef.current = height;
+        voiRangeRef.current = viewport.getProperties().voiRange;
+        viewportRef.current = viewport;
 
-        console.log("Original pixel data stored:", originalPixelData.length);
-
-        // --------------------------------
-        // Apply OpenCV smoothing
-        // --------------------------------
-
-        const smoothedPixelData = await applySmoothing(
-          originalPixelData,
-          width,
-          height,
-        );
-
-        console.log("Smoothed pixel data:", smoothedPixelData);
-
-        console.log("Smoothed pixel data length:", smoothedPixelData.length);
-
-        // --------------------------------
-        // Compare pixels
-        // --------------------------------
-
-        console.log(
-          "Original first 10 pixels:",
-          Array.from(originalPixelData.slice(0, 10)),
-        );
-
-        console.log(
-          "Smoothed first 10 pixels:",
-          Array.from(smoothedPixelData.slice(0, 10)),
-        );
-
-        const { min, max } = getMinMax(smoothedPixelData);
-
-        console.log("Processed min:", min);
-
-        console.log("Processed max:", max);
-
-        
-
-        viewport.resetCamera();
-        viewport.render();
-
-        //console.log("Image rendered");
+        setReady(true);
       } catch (error) {
         console.error("DICOM loading failed:", error);
       }
@@ -152,9 +119,156 @@ export default function DicomViewer() {
     loadDicom();
 
     return () => {
-      renderingEngine?.disableElement(viewportId);
+      cancelled = true;
+      eventTarget.removeEventListener(
+        Enums.Events.IMAGE_LOAD_ERROR,
+        onImageLoadError,
+      );
+      viewportRef.current = null;
+      setReady(false);
+      renderingEngine?.destroy();
     };
   }, []);
 
-  return <div ref={elementRef} className="cornerstone-viewport" />;
+  async function showImage(imageId: string) {
+    const viewport = viewportRef.current;
+
+    if (!viewport) {
+      return;
+    }
+
+    await viewport.setStack([imageId], 0);
+
+    // Keep the original window/level so the comparison is fair
+    if (voiRangeRef.current) {
+      viewport.setProperties({ voiRange: voiRangeRef.current });
+    }
+
+    viewport.render();
+  }
+
+  async function handleApplySmoothing() {
+    const viewport = viewportRef.current;
+    const originalPixelData = originalPixelDataRef.current;
+
+    if (!viewport || !originalPixelData) {
+      return;
+    }
+
+    setProcessing(true);
+
+    try {
+      const width = imageWidthRef.current;
+      const height = imageHeightRef.current;
+
+      // --------------------------------
+      // Apply OpenCV smoothing
+      // --------------------------------
+
+      const smoothedPixelData = await applySmoothing(
+        originalPixelData,
+        width,
+        height,
+      );
+
+      // --------------------------------
+      // Show processed pixels in the viewport
+      // --------------------------------
+
+      // createAndCacheLocalImage registers imagePlane/imagePixel metadata
+      // for the new imageId and puts the image in the cache, which the
+      // StackViewport needs in order to display it.
+      const imagePlane = metaData.get("imagePlaneModule", originalImageId);
+      const processedImageId = `processed:smoothing-${Date.now()}`;
+
+      imageLoader.createAndCacheLocalImage(processedImageId, {
+        scalarData: smoothedPixelData,
+        dimensions: [width, height],
+        spacing: [
+          imagePlane?.columnPixelSpacing ?? 1,
+          imagePlane?.rowPixelSpacing ?? 1,
+        ],
+        origin: imagePlane?.imagePositionPatient,
+        direction: imagePlane?.imageOrientationPatient,
+        frameOfReferenceUID: imagePlane?.frameOfReferenceUID,
+        targetBuffer: { type: "Uint16Array" },
+      });
+
+      // StackViewport.buildMetadata destructures generalSeriesModule (modality);
+      // createAndCacheLocalImage doesn't register it, so copy it from the original.
+      utilities.genericMetadataProvider.add(processedImageId, {
+        type: "generalSeriesModule",
+        metadata: metaData.get("generalSeriesModule", originalImageId) ?? {
+          modality: "OT",
+        },
+      });
+
+      await showImage(processedImageId);
+
+      // --------------------------------
+      // Verify what is actually rendered (VTK scalars) vs original
+      // --------------------------------
+
+      const renderedPixels = viewport
+        .getDefaultActor()
+        ?.actor.getMapper()
+        ?.getInputData()
+        ?.getPointData()
+        .getScalars()
+        .getData();
+
+      if (!renderedPixels) {
+        console.error("No rendered VTK scalar data found");
+        return;
+      }
+
+      let changedPixels = 0;
+      let maxDifference = 0;
+
+      for (let i = 0; i < originalPixelData.length; i++) {
+        const difference = Math.abs(renderedPixels[i] - originalPixelData[i]);
+
+        if (difference > 0) {
+          changedPixels++;
+        }
+
+        if (difference > maxDifference) {
+          maxDifference = difference;
+        }
+      }
+
+      console.log("Displayed image:", viewport.getCurrentImageId());
+      console.log("Changed pixels:", changedPixels, "/", originalPixelData.length);
+      console.log("Max difference:", maxDifference);
+    } catch (error) {
+      console.error("Smoothing failed:", error);
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  async function handleReset() {
+    try {
+      await showImage(originalImageId);
+    } catch (error) {
+      console.error("Reset failed:", error);
+    }
+  }
+
+  return (
+    <div>
+      <div className="viewer-toolbar">
+        <button
+          disabled={!ready || processing}
+          onClick={handleApplySmoothing}
+        >
+          {processing ? "Smoothing…" : "Apply smoothing"}
+        </button>
+        <button disabled={!ready || processing} onClick={handleReset}>
+          Reset
+        </button>
+      </div>
+      <div ref={elementRef} className="cornerstone-viewport" />
+    </div>
+  );
 }
