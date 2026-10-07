@@ -8,7 +8,17 @@ import {
 } from "@cornerstonejs/core";
 import { initCornerstone } from "../cornerstone/initCornerstone";
 import { initOpenCV } from "../imageProcessing/opencv";
-import { applySmoothing } from "../imageProcessing/smoothing";
+import { processImage } from "../imageProcessing/filterPipeline";
+import {
+  DEFAULT_FILTER_SETTINGS,
+  FILTER_CONTROLS,
+  type FilterKey,
+  type FilterSettings,
+} from "../imageProcessing/filterConfig";
+import { getMinMax } from "../imageProcessing/pixelUtils";
+
+// Slider groups in pipeline order: Smoothing, then Unsharp Mask
+const FILTER_GROUPS = [...new Set(FILTER_CONTROLS.map((c) => c.group))];
 
 const { ViewportType } = Enums;
 
@@ -25,12 +35,17 @@ export default function DicomViewer() {
   const originalPixelDataRef = useRef<Uint16Array | null>(null);
   const imageWidthRef = useRef<number>(0);
   const imageHeightRef = useRef<number>(0);
+  // max − min of the original pixels; USM threshold is a fraction of this
+  const pixelRangeRef = useRef<number>(0);
   // Lets a newer filter run win over a slower older one
   const filterRequestRef = useRef(0);
 
   const [ready, setReady] = useState(false);
   const [processing, setProcessing] = useState(false);
-  const [sigma, setSigma] = useState(8);
+  // Defaults leave every filter off, i.e. the unfiltered DICOM shown on load
+  const [settings, setSettings] = useState<FilterSettings>(
+    DEFAULT_FILTER_SETTINGS,
+  );
 
   useEffect(() => {
     let renderingEngine: RenderingEngine | undefined;
@@ -105,7 +120,13 @@ export default function DicomViewer() {
         // Keep ORIGINAL pixels for processing / reset
         // --------------------------------
 
-        originalPixelDataRef.current = new Uint16Array(imageData.scalarData);
+        const originalPixelData = new Uint16Array(imageData.scalarData);
+        const { min, max } = getMinMax(originalPixelData);
+
+        console.log("Pixel range:", min, "–", max);
+
+        originalPixelDataRef.current = originalPixelData;
+        pixelRangeRef.current = max - min;
         imageWidthRef.current = width;
         imageHeightRef.current = height;
         viewportRef.current = viewport;
@@ -193,7 +214,7 @@ export default function DicomViewer() {
     console.log("Max difference:", maxDifference);
   }
 
-  async function applyFilter(filterSigma: number) {
+  async function runFilters(nextSettings: FilterSettings) {
     const originalPixelData = originalPixelDataRef.current;
 
     if (!originalPixelData) {
@@ -206,20 +227,21 @@ export default function DicomViewer() {
 
     try {
       // Always filter from the original, never from the previous result
-      const smoothedPixelData = await applySmoothing(
+      const processedPixelData = await processImage(
         originalPixelData,
         imageWidthRef.current,
         imageHeightRef.current,
-        filterSigma,
+        pixelRangeRef.current,
+        nextSettings,
       );
 
       if (requestId !== filterRequestRef.current) {
         return;
       }
 
-      displayPixels(smoothedPixelData);
+      displayPixels(processedPixelData);
     } catch (error) {
-      console.error("Smoothing failed:", error);
+      console.error("Filtering failed:", error);
     } finally {
       if (requestId === filterRequestRef.current) {
         setProcessing(false);
@@ -237,36 +259,71 @@ export default function DicomViewer() {
     // Invalidate any filter run still in flight
     filterRequestRef.current++;
     setProcessing(false);
+    setSettings(DEFAULT_FILTER_SETTINGS);
 
     displayPixels(originalPixelData);
+  }
+
+  function updateSetting(key: FilterKey, value: number) {
+    setSettings((current) => ({ ...current, [key]: value }));
+  }
+
+  // Run on slider release; build settings from the released value so a
+  // not-yet-rendered state update can't make us filter with a stale value
+  function commitSetting(key: FilterKey, value: number) {
+    const nextSettings = { ...settings, [key]: value };
+
+    setSettings(nextSettings);
+    runFilters(nextSettings);
   }
 
   return (
     <div>
       <div className="viewer-toolbar">
-        <label>
-          Sigma: {sigma.toFixed(1)}
-          <input
-            type="range"
-            min={0.1}
-            max={30}
-            step={0.1}
-            value={sigma}
-            disabled={!ready}
-            onChange={(event) => setSigma(Number(event.target.value))}
-            // Filter when the user lets go, not on every drag tick
-            onPointerUp={(event) =>
-              applyFilter(Number(event.currentTarget.value))
-            }
-            onKeyUp={(event) => applyFilter(Number(event.currentTarget.value))}
-          />
-        </label>
-        <button disabled={!ready || processing} onClick={() => applyFilter(sigma)}>
-          {processing ? "Smoothing…" : "Apply smoothing"}
-        </button>
-        <button disabled={!ready} onClick={handleReset}>
-          Reset
-        </button>
+        {FILTER_GROUPS.map((group) => (
+          <fieldset key={group} className="filter-group" disabled={!ready}>
+            <legend>{group}</legend>
+            {FILTER_CONTROLS.filter((control) => control.group === group).map(
+              (control) => (
+                <label key={control.key} className="filter-control">
+                  <span className="filter-label">{control.label}</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={settings[control.key]}
+                    onChange={(event) =>
+                      updateSetting(control.key, Number(event.target.value))
+                    }
+                    // Filter when the user lets go, not on every drag tick
+                    onPointerUp={(event) =>
+                      commitSetting(
+                        control.key,
+                        Number(event.currentTarget.value),
+                      )
+                    }
+                    onKeyUp={(event) =>
+                      commitSetting(
+                        control.key,
+                        Number(event.currentTarget.value),
+                      )
+                    }
+                  />
+                  <span className="filter-value">
+                    {control.format(settings[control.key])}
+                  </span>
+                </label>
+              ),
+            )}
+          </fieldset>
+        ))}
+        <div className="filter-actions">
+          <button disabled={!ready} onClick={handleReset}>
+            Reset
+          </button>
+          {processing && <span>Processing…</span>}
+        </div>
       </div>
       <div ref={elementRef} className="cornerstone-viewport" />
     </div>

@@ -1,6 +1,8 @@
 import cvModule from "@techstark/opencv-js";
 
-let initializationPromise: Promise<typeof cvModule> | null = null;
+export type OpenCV = typeof cvModule;
+
+let initializationPromise: Promise<OpenCV> | null = null;
 
 export function initOpenCV() {
   if (!initializationPromise) {

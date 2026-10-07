@@ -1,7 +1,34 @@
 .viewer-toolbar {
   display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
   gap: 8px;
   margin-bottom: 8px;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+}
+
+.filter-control {
+  display: grid;
+  grid-template-columns: 5rem 10rem 11rem;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: center;
 }
 
 .cornerstone-viewport {
