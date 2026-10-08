@@ -15,7 +15,13 @@ import {
   type FilterKey,
   type FilterSettings,
 } from "../imageProcessing/filterConfig";
-import { getMinMax } from "../imageProcessing/pixelUtils";
+import {
+  getComponentCount,
+  getMinMax,
+  isPixelArray,
+  toLuminance,
+  type PixelArray,
+} from "../imageProcessing/pixelUtils";
 
 // Slider groups in pipeline order: Smoothing, then Unsharp Mask
 const FILTER_GROUPS = [...new Set(FILTER_CONTROLS.map((c) => c.group))];
@@ -25,14 +31,14 @@ const { ViewportType } = Enums;
 const renderingEngineId = "tigerview9RenderingEngine";
 const viewportId = "tigerview9Viewport";
 
-const dicomUrl = "https://localhost:7099/api/dicom/instance-0005.dcm";
+const dicomUrl = "https://localhost:7099/api/dicom/Grainy-High-Contrast-Chest-X-Ray.dcm";
 const originalImageId = `wadouri:${dicomUrl}`;
 
 export default function DicomViewer() {
   const elementRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<Types.IStackViewport | null>(null);
   // Untouched copy of the DICOM pixels; every filter run starts from this
-  const originalPixelDataRef = useRef<Uint16Array | null>(null);
+  const originalPixelDataRef = useRef<PixelArray | null>(null);
   const imageWidthRef = useRef<number>(0);
   const imageHeightRef = useRef<number>(0);
   // max − min of the original pixels; USM threshold is a fraction of this
@@ -42,6 +48,10 @@ export default function DicomViewer() {
 
   const [ready, setReady] = useState(false);
   const [processing, setProcessing] = useState(false);
+  // Reason the filters can't run on this image (e.g. colour), if any
+  const [filterUnsupported, setFilterUnsupported] = useState<string | null>(
+    null,
+  );
   // Defaults leave every filter off, i.e. the unfiltered DICOM shown on load
   const [settings, setSettings] = useState<FilterSettings>(
     DEFAULT_FILTER_SETTINGS,
@@ -110,26 +120,53 @@ export default function DicomViewer() {
         console.log("Width:", width);
         console.log("Height:", height);
 
-        if (!(imageData.scalarData instanceof Uint16Array)) {
+        const scalarData = imageData.scalarData;
+
+        if (!isPixelArray(scalarData)) {
           throw new Error(
-            `Expected Uint16Array but got ${imageData.scalarData.constructor.name}`,
+            `Unsupported pixel type: ${scalarData.constructor.name}`,
           );
+        }
+
+        viewportRef.current = viewport;
+
+        // 1 = grayscale, 3 = RGB; 4 (RGBA) isn't expected with StackViewport
+        const components = getComponentCount(scalarData, width, height);
+
+        if (components !== 1 && components !== 3 && components !== 4) {
+          setFilterUnsupported(
+            `Unsupported pixel layout (${components} components)`,
+          );
+          setReady(true);
+          return;
+        }
+
+        if (components === 4) {
+          console.warn("Unexpected RGBA pixel data; filtering may misbehave");
         }
 
         // --------------------------------
         // Keep ORIGINAL pixels for processing / reset
         // --------------------------------
 
-        const originalPixelData = new Uint16Array(imageData.scalarData);
-        const { min, max } = getMinMax(originalPixelData);
+        const originalPixelData = scalarData.slice();
+        // Filters work on brightness, so the USM threshold base is its range
+        const { min, max } = getMinMax(
+          toLuminance(originalPixelData, components),
+        );
 
-        console.log("Pixel range:", min, "–", max);
+        console.log(
+          "Pixel type:",
+          originalPixelData.constructor.name,
+          "components:",
+          components,
+        );
+        console.log("Luminance range:", min, "–", max);
 
         originalPixelDataRef.current = originalPixelData;
         pixelRangeRef.current = max - min;
         imageWidthRef.current = width;
         imageHeightRef.current = height;
-        viewportRef.current = viewport;
 
         setReady(true);
       } catch (error) {
@@ -147,12 +184,13 @@ export default function DicomViewer() {
       );
       viewportRef.current = null;
       setReady(false);
+      setFilterUnsupported(null);
       renderingEngine?.destroy();
     };
   }, []);
 
   // Write pixels into the loaded image and redraw, without reloading the stack
-  function displayPixels(pixels: Uint16Array) {
+  function displayPixels(pixels: PixelArray) {
     const viewport = viewportRef.current;
 
     if (!viewport) {
@@ -281,7 +319,11 @@ export default function DicomViewer() {
     <div>
       <div className="viewer-toolbar">
         {FILTER_GROUPS.map((group) => (
-          <fieldset key={group} className="filter-group" disabled={!ready}>
+          <fieldset
+            key={group}
+            className="filter-group"
+            disabled={!ready || filterUnsupported !== null}
+          >
             <legend>{group}</legend>
             {FILTER_CONTROLS.filter((control) => control.group === group).map(
               (control) => (
@@ -319,10 +361,14 @@ export default function DicomViewer() {
           </fieldset>
         ))}
         <div className="filter-actions">
-          <button disabled={!ready} onClick={handleReset}>
+          <button
+            disabled={!ready || filterUnsupported !== null}
+            onClick={handleReset}
+          >
             Reset
           </button>
           {processing && <span>Processing…</span>}
+          {filterUnsupported && <span>{filterUnsupported}</span>}
         </div>
       </div>
       <div ref={elementRef} className="cornerstone-viewport" />
