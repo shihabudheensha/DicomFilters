@@ -1,12 +1,14 @@
 import type { Mat } from "@techstark/opencv-js";
 
 import {
+  gammaValue,
   smoothingSigma,
   usmRadiusSigma,
   usmStrength,
   usmThresholdFraction,
   type FilterSettings,
 } from "./filterConfig";
+import { applyGamma } from "./gamma";
 import { initOpenCV, type OpenCV } from "./opencv";
 import {
   getComponentCount,
@@ -71,8 +73,8 @@ function recombine(
 }
 
 /**
- * Runs Original → Smoothing → Unsharp Mask, always starting from the
- * original pixels. Grayscale and colour (RGB/RGBA) are both handled by
+ * Runs Original → Smoothing → Unsharp Mask → Gamma, always starting from
+ * the original pixels. Grayscale and colour (RGB/RGBA) are both handled by
  * filtering brightness (luminance) only, then recombining.
  * Works in Float32 internally so subtracting a blur never underflows; the
  * final convert back to the source type rounds and clamps to that type's
@@ -83,15 +85,17 @@ export async function processImage<T extends PixelArray>(
   original: T,
   width: number,
   height: number,
-  pixelRange: number,
+  luminanceRange: { min: number; max: number },
   settings: FilterSettings,
 ): Promise<T> {
+  const pixelRange = luminanceRange.max - luminanceRange.min;
   const sigma = smoothingSigma(settings.smoothing);
   const strength = usmStrength(settings.usmAmount);
   const radiusSigma = usmRadiusSigma(settings.usmRadius);
   const threshold = usmThresholdFraction(settings.usmThreshold) * pixelRange;
+  const gamma = gammaValue(settings.gamma);
 
-  if (sigma <= 0 && strength <= 0) {
+  if (sigma <= 0 && strength <= 0 && gamma === 1) {
     return original.slice() as T;
   }
 
@@ -111,6 +115,7 @@ export async function processImage<T extends PixelArray>(
     usmStrength: strength,
     usmRadiusSigma: radiusSigma,
     usmThreshold: threshold,
+    gamma,
   });
 
   const mats: Mat[] = [];
@@ -135,6 +140,11 @@ export async function processImage<T extends PixelArray>(
       current = track(
         unsharpMask(cv, current, { strength, radiusSigma, threshold }),
       );
+    }
+
+    // Tone adjustment last, after detail processing
+    if (gamma !== 1) {
+      current = track(applyGamma(cv, current, { gamma, ...luminanceRange }));
     }
 
     // Copy out of OpenCV memory before the Mats are freed

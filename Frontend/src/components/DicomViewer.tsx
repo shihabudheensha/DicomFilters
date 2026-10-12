@@ -31,7 +31,7 @@ const { ViewportType } = Enums;
 const renderingEngineId = "tigerview9RenderingEngine";
 const viewportId = "tigerview9Viewport";
 
-const dicomUrl = "https://localhost:7099/api/dicom/Grainy-High-Contrast-Chest-X-Ray.dcm";
+const dicomUrl = "https://localhost:7099/api/dicom/sample_08_knee_lateral.dcm";
 const originalImageId = `wadouri:${dicomUrl}`;
 
 export default function DicomViewer() {
@@ -41,8 +41,8 @@ export default function DicomViewer() {
   const originalPixelDataRef = useRef<PixelArray | null>(null);
   const imageWidthRef = useRef<number>(0);
   const imageHeightRef = useRef<number>(0);
-  // max − min of the original pixels; USM threshold is a fraction of this
-  const pixelRangeRef = useRef<number>(0);
+  // Original brightness range: USM threshold base and gamma's fixed end points
+  const luminanceRangeRef = useRef({ min: 0, max: 0 });
   // Lets a newer filter run win over a slower older one
   const filterRequestRef = useRef(0);
 
@@ -164,7 +164,7 @@ export default function DicomViewer() {
         console.log("Luminance range:", min, "–", max);
 
         originalPixelDataRef.current = originalPixelData;
-        pixelRangeRef.current = max - min;
+        luminanceRangeRef.current = { min, max };
         imageWidthRef.current = width;
         imageHeightRef.current = height;
 
@@ -269,7 +269,7 @@ export default function DicomViewer() {
         originalPixelData,
         imageWidthRef.current,
         imageHeightRef.current,
-        pixelRangeRef.current,
+        luminanceRangeRef.current,
         nextSettings,
       );
 
@@ -331,8 +331,8 @@ export default function DicomViewer() {
                   <span className="filter-label">{control.label}</span>
                   <input
                     type="range"
-                    min={0}
-                    max={100}
+                    min={control.min ?? 0}
+                    max={control.max ?? 100}
                     step={1}
                     value={settings[control.key]}
                     onChange={(event) =>

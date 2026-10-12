@@ -1,12 +1,14 @@
-// Sliders work in percent (0–100). These functions map a percentage to the
-// real filter parameter, so ranges/curves can be tuned here without touching
-// the UI. Pixel values are image pixels, never relative to image size.
+// Sliders work in percent (0–100), except gamma which is −100…+100 around
+// neutral. These functions map a slider value to the real filter parameter,
+// so ranges/curves can be tuned here without touching the UI. Pixel values
+// are image pixels, never relative to image size.
 
 export type FilterSettings = {
   smoothing: number;
   usmAmount: number;
   usmRadius: number;
   usmThreshold: number;
+  gamma: number;
 };
 
 export type FilterKey = keyof FilterSettings;
@@ -16,6 +18,7 @@ export const DEFAULT_FILTER_SETTINGS: FilterSettings = {
   usmAmount: 0,
   usmRadius: 20,
   usmThreshold: 0,
+  gamma: 0,
 };
 
 const fraction = (percent: number) => percent / 100;
@@ -35,11 +38,20 @@ export const usmRadiusSigma = (percent: number) =>
 /** Fraction of the image's pixel range (max − min), 0–0.1 */
 export const usmThresholdFraction = (percent: number) => 0.1 * fraction(percent);
 
+/**
+ * Gamma 0.25–4.00 on a log scale (0 = 1.00 = off), so darker and brighter
+ * get equal slider travel: −50 → 0.50, +50 → 2.00
+ */
+export const gammaValue = (value: number) => 4 ** (value / 100);
+
 export type FilterControl = {
   key: FilterKey;
   label: string;
   group: string;
-  format: (percent: number) => string;
+  /** Slider bounds; default 0–100 */
+  min?: number;
+  max?: number;
+  format: (value: number) => string;
 };
 
 export const FILTER_CONTROLS: FilterControl[] = [
@@ -67,5 +79,13 @@ export const FILTER_CONTROLS: FilterControl[] = [
     group: "Unsharp Mask",
     format: (p) =>
       `${p} % (${(usmThresholdFraction(p) * 100).toFixed(1)} % of range)`,
+  },
+  {
+    key: "gamma",
+    label: "Amount",
+    group: "Gamma",
+    min: -100,
+    max: 100,
+    format: (v) => `γ ${gammaValue(v).toFixed(2)}`,
   },
 ];
