@@ -1,5 +1,5 @@
-// Sliders work in percent (0–100), except gamma which is −100…+100 around
-// neutral. These functions map a slider value to the real filter parameter,
+// Sliders work in percent (0–100), except gamma and contrast, which are
+// −100…+100 around neutral. These functions map a slider value to the real filter parameter,
 // so ranges/curves can be tuned here without touching the UI. Pixel values
 // are image pixels, never relative to image size.
 
@@ -8,6 +8,7 @@ export type FilterSettings = {
   usmAmount: number;
   usmRadius: number;
   usmThreshold: number;
+  contrast: number;
   gamma: number;
 };
 
@@ -18,6 +19,7 @@ export const DEFAULT_FILTER_SETTINGS: FilterSettings = {
   usmAmount: 0,
   usmRadius: 20,
   usmThreshold: 0,
+  contrast: 0,
   gamma: 0,
 };
 
@@ -42,6 +44,12 @@ export const usmRadiusSigma = (percent: number) =>
 
 /** Fraction of the image's pixel range (max − min), 0–0.1 */
 export const usmThresholdFraction = (percent: number) => 0.1 * fraction(percent);
+
+/**
+ * Contrast factor ×0.25–×4.00 on a log scale (0 = ×1.00 = off), so lower
+ * and higher get equal slider travel: −50 → ×0.50, +50 → ×2.00
+ */
+export const contrastFactor = (value: number) => 4 ** (value / 100);
 
 /**
  * Gamma 0.25–4.00 on a log scale (0 = 1.00 = off), so darker and brighter
@@ -84,6 +92,14 @@ export const FILTER_CONTROLS: FilterControl[] = [
     group: "Unsharp Mask",
     format: (p) =>
       `${p} % (${(usmThresholdFraction(p) * 100).toFixed(1)} % of range)`,
+  },
+  {
+    key: "contrast",
+    label: "Amount",
+    group: "Contrast",
+    min: -100,
+    max: 100,
+    format: (v) => `×${contrastFactor(v).toFixed(2)}`,
   },
   {
     key: "gamma",

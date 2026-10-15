@@ -1,6 +1,8 @@
 import type { Mat } from "@techstark/opencv-js";
 
+import { applyContrast } from "./contrast";
 import {
+  contrastFactor,
   gammaValue,
   smoothingSigma,
   usmRadiusSigma,
@@ -69,8 +71,8 @@ function recombine(
 }
 
 /**
- * Runs Original → Smoothing → Unsharp Mask → Gamma, always starting from
- * the original pixels. Grayscale and colour (RGB/RGBA) are both handled by
+ * Runs Original → Smoothing → Unsharp Mask → Contrast → Gamma, always
+ * starting from the original pixels. Grayscale and colour (RGB/RGBA) are both handled by
  * filtering brightness (luminance) only, then recombining.
  * Works in Float32 internally so subtracting a blur never underflows; the
  * final convert back to the source type rounds and clamps to that type's
@@ -90,9 +92,10 @@ export async function processImage<T extends PixelArray>(
   const strength = usmStrength(settings.usmAmount);
   const radiusSigma = usmRadiusSigma(settings.usmRadius);
   const threshold = usmThresholdFraction(settings.usmThreshold) * pixelRange;
+  const factor = contrastFactor(settings.contrast);
   const gamma = gammaValue(settings.gamma);
 
-  if (sigma <= 0 && strength <= 0 && gamma === 1) {
+  if (sigma <= 0 && strength <= 0 && factor === 1 && gamma === 1) {
     return original;
   }
 
@@ -112,6 +115,7 @@ export async function processImage<T extends PixelArray>(
     usmStrength: strength,
     usmRadiusSigma: radiusSigma,
     usmThreshold: threshold,
+    contrast: factor,
     gamma,
   });
 
@@ -153,7 +157,15 @@ export async function processImage<T extends PixelArray>(
       );
     }
 
-    // Tone adjustment last, after detail processing
+    // Tone adjustments last, after detail processing: the linear contrast
+    // stretch first, then the gamma curve within the same range
+    if (factor !== 1) {
+      current = replace(
+        current,
+        applyContrast(cv, current, { factor, ...luminanceRange }),
+      );
+    }
+
     if (gamma !== 1) {
       current = replace(
         current,
