@@ -10,6 +10,7 @@ import { initCornerstone } from "../cornerstone/initCornerstone";
 import { initOpenCV } from "../imageProcessing/opencv";
 import { processImage } from "../imageProcessing/filterPipeline";
 import {
+  areFilterSettingsEqual,
   DEFAULT_FILTER_SETTINGS,
   FILTER_CONTROLS,
   type FilterKey,
@@ -26,12 +27,16 @@ import {
 // Slider groups in pipeline order: Smoothing, then Unsharp Mask
 const FILTER_GROUPS = [...new Set(FILTER_CONTROLS.map((c) => c.group))];
 
+// Logs changed-pixel stats after each preview; a full-image pass, so off
+// unless checking that filter output is unchanged
+const DEBUG_FILTERS = false;
+
 const { ViewportType } = Enums;
 
 const renderingEngineId = "tigerview9RenderingEngine";
 const viewportId = "tigerview9Viewport";
 
-const dicomUrl = "https://localhost:7099/api/dicom/sample_08_knee_lateral.dcm";
+const dicomUrl = "https://localhost:7099/api/dicom/Grainy-High-Contrast-Chest-X-Ray.dcm";
 const originalImageId = `wadouri:${dicomUrl}`;
 
 export default function DicomViewer() {
@@ -45,6 +50,10 @@ export default function DicomViewer() {
   const luminanceRangeRef = useRef({ min: 0, max: 0 });
   // Lets a newer filter run win over a slower older one
   const filterRequestRef = useRef(0);
+  // Settings currently shown; a commit with the same values is skipped
+  const lastAppliedSettingsRef = useRef<FilterSettings>(
+    DEFAULT_FILTER_SETTINGS,
+  );
 
   const [ready, setReady] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -223,7 +232,9 @@ export default function DicomViewer() {
 
     viewport.render();
 
-    logDifference(vtkImageData.getPointData().getScalars().getData());
+    if (DEBUG_FILTERS) {
+      logDifference(vtkImageData.getPointData().getScalars().getData());
+    }
   }
 
   function logDifference(renderedPixels: ArrayLike<number>) {
@@ -278,6 +289,9 @@ export default function DicomViewer() {
       }
 
       displayPixels(processedPixelData);
+
+      // Recorded only on success, so a failed run can be retried
+      lastAppliedSettingsRef.current = nextSettings;
     } catch (error) {
       console.error("Filtering failed:", error);
     } finally {
@@ -298,6 +312,7 @@ export default function DicomViewer() {
     filterRequestRef.current++;
     setProcessing(false);
     setSettings(DEFAULT_FILTER_SETTINGS);
+    lastAppliedSettingsRef.current = DEFAULT_FILTER_SETTINGS;
 
     displayPixels(originalPixelData);
   }
@@ -312,6 +327,12 @@ export default function DicomViewer() {
     const nextSettings = { ...settings, [key]: value };
 
     setSettings(nextSettings);
+
+    // Clicking without dragging, or Tab/Shift keyups, change nothing
+    if (areFilterSettingsEqual(nextSettings, lastAppliedSettingsRef.current)) {
+      return;
+    }
+
     runFilters(nextSettings);
   }
 

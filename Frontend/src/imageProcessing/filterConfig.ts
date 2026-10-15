@@ -21,6 +21,11 @@ export const DEFAULT_FILTER_SETTINGS: FilterSettings = {
   gamma: 0,
 };
 
+/** True when every filter value matches, i.e. a re-run would change nothing */
+export function areFilterSettingsEqual(a: FilterSettings, b: FilterSettings) {
+  return (Object.keys(a) as FilterKey[]).every((key) => a[key] === b[key]);
+}
+
 const fraction = (percent: number) => percent / 100;
 
 // Squared curves give finer control at the low end, where useful values are

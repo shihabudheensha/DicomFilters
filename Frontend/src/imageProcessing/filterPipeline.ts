@@ -45,9 +45,9 @@ function getMatFormat(cv: OpenCV, pixels: PixelArray): MatFormat {
 }
 
 /**
- * Puts the filtered brightness back into the image. Grayscale takes it
- * directly; colour shifts R, G and B by the same brightness change, so hue
- * is kept and sharpened edges get no colour fringes. Alpha is untouched.
+ * Puts the filtered brightness back into a colour image: R, G and B shift by
+ * the same brightness change, so hue is kept and sharpened edges get no
+ * colour fringes. Alpha is untouched. (Grayscale skips this step.)
  */
 function recombine(
   original: PixelArray,
@@ -55,10 +55,6 @@ function recombine(
   luminance: Float32Array,
   filteredLuminance: Float32Array,
 ): Float32Array {
-  if (components === 1) {
-    return filteredLuminance;
-  }
-
   const output = Float32Array.from(original);
 
   for (let i = 0, p = 0; i < luminance.length; i++, p += components) {
@@ -79,7 +75,8 @@ function recombine(
  * Works in Float32 internally so subtracting a blur never underflows; the
  * final convert back to the source type rounds and clamps to that type's
  * range (e.g. 0–255 for 8-bit, 0–65535 for Uint16).
- * Returns a new array of the same type and length as `original`.
+ * Returns an array of the same type and length as `original`; when every
+ * filter is off this is `original` itself (callers copy it, never mutate it).
  */
 export async function processImage<T extends PixelArray>(
   original: T,
@@ -96,7 +93,7 @@ export async function processImage<T extends PixelArray>(
   const gamma = gammaValue(settings.gamma);
 
   if (sigma <= 0 && strength <= 0 && gamma === 1) {
-    return original.slice() as T;
+    return original;
   }
 
   const components = getComponentCount(original, width, height);
@@ -126,28 +123,58 @@ export async function processImage<T extends PixelArray>(
     return mat;
   };
 
-  try {
-    const luminance = toLuminance(original, components);
+  // Swaps in a step's output and frees the Mat it replaces right away, so
+  // intermediate results don't pile up in WASM memory until the end
+  const replace = (previous: Mat, next: Mat) => {
+    track(next);
+    mats.splice(mats.indexOf(previous), 1);
+    previous.delete();
+    return next;
+  };
 
+  try {
     let current = track(new cv.Mat(height, width, cv.CV_32FC1));
-    current.data32F.set(luminance);
+
+    // Grayscale: the brightness plane is the pixels themselves; .set converts
+    // the element type exactly as Float32Array.from would, without the copy
+    const luminance =
+      components === 1 ? null : toLuminance(original, components);
+
+    current.data32F.set(luminance ?? original);
 
     if (sigma > 0) {
-      current = track(smooth(cv, current, sigma));
+      current = replace(current, smooth(cv, current, sigma));
     }
 
     if (strength > 0) {
-      current = track(
+      current = replace(
+        current,
         unsharpMask(cv, current, { strength, radiusSigma, threshold }),
       );
     }
 
     // Tone adjustment last, after detail processing
     if (gamma !== 1) {
-      current = track(applyGamma(cv, current, { gamma, ...luminanceRange }));
+      current = replace(
+        current,
+        applyGamma(cv, current, { gamma, ...luminanceRange }),
+      );
     }
 
-    // Copy out of OpenCV memory before the Mats are freed
+    // Grayscale: the filtered plane already has the output layout, so convert
+    // it directly (same saturating conversion as the colour path)
+    if (!luminance) {
+      if (original instanceof Float32Array) {
+        return current.data32F.slice() as T;
+      }
+
+      const result = track(new cv.Mat());
+      current.convertTo(result, format.type);
+
+      return format.view(result).slice() as T;
+    }
+
+    // Colour: copy out of OpenCV memory before the Mats are freed
     const recombined = recombine(
       original,
       components,
