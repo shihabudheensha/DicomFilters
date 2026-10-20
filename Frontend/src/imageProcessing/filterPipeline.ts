@@ -72,8 +72,9 @@ function recombine(
 
 /**
  * Runs Original → Smoothing → Unsharp Mask → Contrast → Gamma, always
- * starting from the original pixels. Grayscale and colour (RGB/RGBA) are both handled by
- * filtering brightness (luminance) only, then recombining.
+ * starting from the original pixels. Grayscale and colour (RGB/RGBA) are
+ * both handled by filtering brightness (luminance) only, then recombining.
+ * Pass `{ debug: true }` to log the filter values used.
  * Works in Float32 internally so subtracting a blur never underflows; the
  * final convert back to the source type rounds and clamps to that type's
  * range (e.g. 0–255 for 8-bit, 0–65535 for Uint16).
@@ -86,6 +87,7 @@ export async function processImage<T extends PixelArray>(
   height: number,
   luminanceRange: { min: number; max: number },
   settings: FilterSettings,
+  { debug = false }: { debug?: boolean } = {},
 ): Promise<T> {
   const pixelRange = luminanceRange.max - luminanceRange.min;
   const sigma = smoothingSigma(settings.smoothing);
@@ -108,16 +110,18 @@ export async function processImage<T extends PixelArray>(
   const cv = await initOpenCV();
   const format = getMatFormat(cv, original);
 
-  console.log("Filter pipeline:", {
-    pixelType: original.constructor.name,
-    components,
-    smoothingSigma: sigma,
-    usmStrength: strength,
-    usmRadiusSigma: radiusSigma,
-    usmThreshold: threshold,
-    contrast: factor,
-    gamma,
-  });
+  if (debug) {
+    console.log("Filter pipeline:", {
+      pixelType: original.constructor.name,
+      components,
+      smoothingSigma: sigma,
+      usmStrength: strength,
+      usmRadiusSigma: radiusSigma,
+      usmThreshold: threshold,
+      contrast: factor,
+      gamma,
+    });
+  }
 
   const mats: Mat[] = [];
 
