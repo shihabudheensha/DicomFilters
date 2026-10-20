@@ -1,7 +1,7 @@
 # imageProcessing
 
 OpenCV.js image filters for Cornerstone3D stack viewports:
-**Smoothing → Unsharp Mask → Contrast → Gamma**, always applied to a copy of
+**Smoothing → Unsharp Mask → Gamma**, always applied to a copy of
 the original pixels. No UI is included; each project builds its own controls.
 
 ## Requirements
@@ -122,13 +122,13 @@ preview. The stats are a full-image pass, so leave it off in production.
 ## Tuning and extending
 
 - **Ranges and curves:** `filterConfig.ts` maps each slider value to the real
-  filter parameter (e.g. `smoothingSigma`, `contrastFactor`). Change them
+  filter parameter (e.g. `smoothingSigma`, `gammaValue`). Change them
   there; the UI and pipeline pick them up.
 - **Adding a filter:**
   1. Add its setting, default, mapping function and `FILTER_CONTROLS` entry
      in `filterConfig.ts`.
   2. Add a step file (e.g. `myFilter.ts`) that takes a CV_32FC1 `Mat` and
-     returns a new one, like `contrast.ts`.
+     returns a new one, like `gamma.ts`.
   3. Add one `if (...) current = replace(current, myFilter(...))` line in
      `filterPipeline.ts` at the right point in the order, and include it in
      the "all filters off" check.

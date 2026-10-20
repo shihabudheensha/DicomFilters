@@ -88,7 +88,7 @@ export function createViewportFilter(
 
   // Untouched copy of the DICOM pixels; every filter run starts from this
   const original = scalarData.slice();
-  // Filters work on brightness: USM threshold base and contrast/gamma range
+  // Filters work on brightness: USM threshold base and gamma's range
   const luminanceRange = getMinMax(toLuminance(original, components));
 
   if (debug) {
